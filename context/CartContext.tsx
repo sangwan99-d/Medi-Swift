@@ -1,6 +1,5 @@
-import React, { createContext, useContext, useState, useMemo, ReactNode } from "react";
+import React, { createContext, useContext, useState, useMemo, ReactNode, useEffect } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useEffect } from "react";
 
 export interface Medicine {
   id: string;
@@ -25,6 +24,7 @@ export interface CartItem extends Medicine {
 interface CartContextValue {
   items: CartItem[];
   prescriptionUri: string | null;
+  customerId: string;
   addItem: (medicine: Medicine) => void;
   removeItem: (id: string) => void;
   updateQuantity: (id: string, quantity: number) => void;
@@ -42,6 +42,7 @@ const CartContext = createContext<CartContextValue | null>(null);
 export function CartProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<CartItem[]>([]);
   const [prescriptionUri, setPrescriptionUri] = useState<string | null>(null);
+  const [customerId] = useState("customer-demo");
 
   useEffect(() => {
     AsyncStorage.getItem("cart").then((val) => {
@@ -57,26 +58,17 @@ export function CartProvider({ children }: { children: ReactNode }) {
     setItems((prev) => {
       const existing = prev.find((i) => i.id === medicine.id);
       if (existing) {
-        return prev.map((i) =>
-          i.id === medicine.id ? { ...i, quantity: i.quantity + 1 } : i
-        );
+        return prev.map((i) => i.id === medicine.id ? { ...i, quantity: i.quantity + 1 } : i);
       }
       return [...prev, { ...medicine, quantity: 1 }];
     });
   };
 
-  const removeItem = (id: string) => {
-    setItems((prev) => prev.filter((i) => i.id !== id));
-  };
+  const removeItem = (id: string) => setItems((prev) => prev.filter((i) => i.id !== id));
 
   const updateQuantity = (id: string, quantity: number) => {
-    if (quantity <= 0) {
-      removeItem(id);
-      return;
-    }
-    setItems((prev) =>
-      prev.map((i) => (i.id === id ? { ...i, quantity } : i))
-    );
+    if (quantity <= 0) { removeItem(id); return; }
+    setItems((prev) => prev.map((i) => i.id === id ? { ...i, quantity } : i));
   };
 
   const clearCart = () => {
@@ -85,27 +77,21 @@ export function CartProvider({ children }: { children: ReactNode }) {
     AsyncStorage.removeItem("cart");
   };
 
-  const setPrescription = (uri: string | null) => {
-    setPrescriptionUri(uri);
-  };
-
-  const value = useMemo(
-    () => ({
-      items,
-      prescriptionUri,
-      addItem,
-      removeItem,
-      updateQuantity,
-      clearCart,
-      setPrescription,
-      totalItems: items.reduce((sum, i) => sum + i.quantity, 0),
-      totalPrice: items.reduce((sum, i) => sum + i.price * i.quantity, 0),
-      requiresPrescription: items.some((i) => i.isPrescriptionRequired),
-      hasColdChainItems: items.some((i) => i.requiresColdChain),
-      hasScheduleXItems: items.some((i) => i.isScheduleX),
-    }),
-    [items, prescriptionUri]
-  );
+  const value = useMemo(() => ({
+    items,
+    prescriptionUri,
+    customerId,
+    addItem,
+    removeItem,
+    updateQuantity,
+    clearCart,
+    setPrescription: setPrescriptionUri,
+    totalItems: items.reduce((s, i) => s + i.quantity, 0),
+    totalPrice: items.reduce((s, i) => s + i.price * i.quantity, 0),
+    requiresPrescription: items.some((i) => i.isPrescriptionRequired),
+    hasColdChainItems: items.some((i) => i.requiresColdChain),
+    hasScheduleXItems: items.some((i) => i.isScheduleX),
+  }), [items, prescriptionUri]);
 
   return <CartContext.Provider value={value}>{children}</CartContext.Provider>;
 }
