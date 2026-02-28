@@ -96,6 +96,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
     return res.json(inv);
   });
 
+  app.post("/api/partner/:partnerId/inventory", (req: Request, res: Response) => {
+    const partner = storage.partners.get(req.params.partnerId);
+    if (!partner) return res.status(404).json({ message: "Partner not found" });
+    const { name, genericName, price, unit, suggestedSubstitute } = req.body;
+    if (!name || !genericName || !price || !unit) return res.status(400).json({ message: "Missing required fields" });
+    const id = Date.now().toString(36) + Math.random().toString(36).substr(2, 6);
+    const item = {
+      id,
+      pharmacyId: partner.pharmacyId,
+      medicineId: `custom-${id}`,
+      name,
+      genericName,
+      price: Number(price),
+      unit,
+      isInStock: true,
+      suggestedSubstitute: suggestedSubstitute || undefined,
+    };
+    storage.inventory.set(item.id, item);
+    return res.json(item);
+  });
+
   app.patch("/api/inventory/:itemId", (req: Request, res: Response) => {
     const item = storage.inventory.get(req.params.itemId);
     if (!item) return res.status(404).json({ message: "Item not found" });
