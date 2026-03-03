@@ -8,6 +8,8 @@ import {
   Platform,
   Alert,
   Image,
+  Modal,
+  ActivityIndicator,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -19,10 +21,22 @@ import { Colors } from "@/constants/colors";
 import { useCart } from "@/context/CartContext";
 import { apiRequest, getApiUrl } from "@/lib/query-client";
 
+const PAYMENT_METHODS = [
+  { id: "upi", label: "UPI", sub: "Google Pay, PhonePe, Paytm", icon: "🏦", color: "#4D96FF" },
+  { id: "card", label: "Credit / Debit Card", sub: "Visa, Mastercard, RuPay", icon: "💳", color: "#FF6B6B" },
+  { id: "netbanking", label: "Net Banking", sub: "All major banks", icon: "🏛️", color: "#9B59B6" },
+  { id: "wallet", label: "Wallets", sub: "Paytm, Amazon Pay, Mobikwik", icon: "👛", color: "#FFB547" },
+  { id: "cod", label: "Cash on Delivery", sub: "Pay when you receive", icon: "💰", color: "#00C86F" },
+];
+
 export default function CartScreen() {
   const insets = useSafeAreaInsets();
   const { items, totalPrice, totalItems, requiresPrescription, hasColdChainItems, hasScheduleXItems, prescriptionUri, setPrescription, updateQuantity, removeItem, clearCart, customerId } = useCart();
   const [isPlacingOrder, setIsPlacingOrder] = useState(false);
+  const [paymentModalVisible, setPaymentModalVisible] = useState(false);
+  const [selectedPayment, setSelectedPayment] = useState("upi");
+  const [paymentProcessing, setPaymentProcessing] = useState(false);
+  const [paymentSuccess, setPaymentSuccess] = useState(false);
 
   const topPad = Platform.OS === "web" ? 67 : insets.top;
   const bottomPad = Platform.OS === "web" ? 34 : insets.bottom;
@@ -44,15 +58,55 @@ export default function CartScreen() {
       Alert.alert(
         "ID Verification Required",
         "Your order contains Schedule X controlled substances. You must present a valid government-issued ID to the delivery person.",
-        [{ text: "Cancel", style: "cancel" }, { text: "I Understand, Proceed", onPress: confirmOrder }]
+        [{ text: "Cancel", style: "cancel" }, { text: "I Understand, Proceed", onPress: () => setPaymentModalVisible(true) }]
       );
       return;
     }
-    confirmOrder();
+    setPaymentModalVisible(true);
   };
 
-  const confirmOrder = async () => {
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  const processPayment = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setPaymentProcessing(true);
+    try {
+      // Step 1: Create Razorpay payment order
+      const paymentRes = await apiRequest("POST", "/api/payment/create-order", {
+        amount: totalPrice,
+        currency: "INR",
+        customerName: "Customer",
+        customerEmail: "customer@demo.com",
+        customerPhone: "+919876543210",
+      });
+      const paymentOrder = await paymentRes.json();
+
+      // Step 2: Verify payment (in production, Razorpay SDK handles this)
+      const verifyRes = await apiRequest("POST", "/api/payment/verify", {
+        razorpayOrderId: paymentOrder.razorpayOrderId,
+        razorpayPaymentId: "pay_" + Date.now().toString(36),
+        razorpaySignature: "demo_signature",
+        paymentMethod: selectedPayment,
+      });
+      const verification = await verifyRes.json();
+
+      if (verification.verified) {
+        setPaymentSuccess(true);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        // Wait briefly to show success state
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        await placeOrderAfterPayment();
+      } else {
+        Alert.alert("Payment Failed", "Payment verification failed. Please try again.");
+      }
+    } catch {
+      Alert.alert("Payment Error", "Something went wrong with the payment. Please try again.");
+    } finally {
+      setPaymentProcessing(false);
+      setPaymentSuccess(false);
+      setPaymentModalVisible(false);
+    }
+  };
+
+  const placeOrderAfterPayment = async () => {
     setIsPlacingOrder(true);
     try {
       const pharmacyId = items[0]?.pharmacyId || "ph1";
@@ -75,7 +129,7 @@ export default function CartScreen() {
       const order = await res.json();
       clearCart();
       router.push({ pathname: "/(tabs)/orders", params: { newOrderId: order.id } });
-    } catch (e) {
+    } catch {
       Alert.alert("Error", "Failed to place order. Please try again.");
     } finally {
       setIsPlacingOrder(false);
@@ -209,7 +263,7 @@ export default function CartScreen() {
         </View>
       </ScrollView>
 
-      <View style={[styles.bottomBar, { paddingBottom: bottomPad + 16 }]}>
+      <View style={[styles.bottomBar, { paddingBottom: bottomPad + (Platform.OS === "web" ? 84 : 80) }]}>
         <View style={styles.deliveryInfo}>
           <Ionicons name="flash" size={16} color={Colors.teal} />
           <Text style={styles.deliveryText}>Estimated delivery in ~10 minutes</Text>
@@ -226,6 +280,95 @@ export default function CartScreen() {
           {canPlaceOrder && !isPlacingOrder && <Ionicons name="arrow-forward" size={18} color="#fff" />}
         </TouchableOpacity>
       </View>
+
+      {/* Razorpay Payment Modal */}
+      <Modal visible={paymentModalVisible} animationType="slide" transparent>
+        <View style={styles.payModalOverlay}>
+          <View style={styles.payModalContent}>
+            {paymentProcessing ? (
+              <View style={styles.payProcessing}>
+                {paymentSuccess ? (
+                  <>
+                    <View style={styles.paySuccessIcon}>
+                      <Ionicons name="checkmark-circle" size={64} color={Colors.success} />
+                    </View>
+                    <Text style={styles.payProcessingTitle}>Payment Successful!</Text>
+                    <Text style={styles.payProcessingSub}>Placing your order...</Text>
+                  </>
+                ) : (
+                  <>
+                    <ActivityIndicator size="large" color={Colors.teal} />
+                    <Text style={styles.payProcessingTitle}>Processing Payment</Text>
+                    <Text style={styles.payProcessingSub}>Please wait while we process your payment via Razorpay...</Text>
+                  </>
+                )}
+              </View>
+            ) : (
+              <>
+                <View style={styles.payModalHeader}>
+                  <View>
+                    <Text style={styles.payModalTitle}>Payment</Text>
+                    <Text style={styles.payModalSub}>Powered by Razorpay</Text>
+                  </View>
+                  <TouchableOpacity onPress={() => setPaymentModalVisible(false)}>
+                    <Ionicons name="close" size={24} color={Colors.text} />
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.payAmountCard}>
+                  <Text style={styles.payAmountLabel}>Total Amount</Text>
+                  <Text style={styles.payAmountValue}>₹{totalPrice}</Text>
+                </View>
+
+                <Text style={styles.payMethodsLabel}>Select Payment Method</Text>
+                <ScrollView style={{ maxHeight: 280 }} showsVerticalScrollIndicator={false}>
+                  {PAYMENT_METHODS.map((method) => (
+                    <TouchableOpacity
+                      key={method.id}
+                      style={[
+                        styles.payMethodCard,
+                        selectedPayment === method.id && styles.payMethodCardActive,
+                      ]}
+                      onPress={() => {
+                        Haptics.selectionAsync();
+                        setSelectedPayment(method.id);
+                      }}
+                      activeOpacity={0.8}
+                    >
+                      <View style={[styles.payMethodIcon, { backgroundColor: method.color + "22" }]}>
+                        <Text style={{ fontSize: 22 }}>{method.icon}</Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.payMethodLabel}>{method.label}</Text>
+                        <Text style={styles.payMethodSub}>{method.sub}</Text>
+                      </View>
+                      <View style={[styles.payRadio, selectedPayment === method.id && styles.payRadioActive]}>
+                        {selectedPayment === method.id && <View style={styles.payRadioDot} />}
+                      </View>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+
+                <TouchableOpacity
+                  style={styles.payNowBtn}
+                  onPress={processPayment}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="lock-closed" size={16} color="#fff" />
+                  <Text style={styles.payNowText}>
+                    {selectedPayment === "cod" ? `Confirm Order · ₹${totalPrice}` : `Pay ₹${totalPrice}`}
+                  </Text>
+                </TouchableOpacity>
+
+                <View style={styles.paySecure}>
+                  <Ionicons name="shield-checkmark" size={14} color={Colors.textMuted} />
+                  <Text style={styles.paySecureText}>Secured by Razorpay · 256-bit SSL encryption</Text>
+                </View>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -276,10 +419,37 @@ const styles = StyleSheet.create({
   summaryTotal: { borderTopWidth: 1, borderTopColor: Colors.border, paddingTop: 10, marginTop: 4 },
   totalLabel: { fontFamily: "DMSans_700Bold", fontSize: 16, color: Colors.text },
   totalValue: { fontFamily: "DMSans_700Bold", fontSize: 20, color: Colors.teal },
-  bottomBar: { position: "absolute", bottom: 0, left: 0, right: 0, backgroundColor: Colors.navy, borderTopWidth: 1, borderTopColor: Colors.border, paddingHorizontal: 20, paddingTop: 16, gap: 10 },
+  bottomBar: { position: "absolute", bottom: 0, left: 0, right: 0, backgroundColor: Colors.navy, borderTopWidth: 1, borderTopColor: Colors.border, paddingHorizontal: 20, paddingTop: 16, gap: 10, zIndex: 10 },
   deliveryInfo: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6 },
   deliveryText: { fontFamily: "DMSans_500Medium", fontSize: 13, color: Colors.textSecondary },
   placeOrderBtn: { backgroundColor: Colors.teal, borderRadius: 16, paddingVertical: 16, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 },
   placeOrderBtnDisabled: { backgroundColor: Colors.cardElevated },
   placeOrderText: { fontFamily: "DMSans_700Bold", fontSize: 16, color: "#fff" },
+
+  // Payment modal styles
+  payModalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.7)", justifyContent: "flex-end" },
+  payModalContent: { backgroundColor: Colors.navy, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, paddingBottom: 40, maxHeight: "85%", borderWidth: 1, borderColor: Colors.border },
+  payModalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 20 },
+  payModalTitle: { fontFamily: "DMSans_700Bold", fontSize: 22, color: Colors.text },
+  payModalSub: { fontFamily: "DMSans_400Regular", fontSize: 12, color: Colors.textMuted, marginTop: 2 },
+  payAmountCard: { backgroundColor: Colors.card, borderRadius: 16, padding: 18, alignItems: "center", marginBottom: 20, borderWidth: 1, borderColor: Colors.border },
+  payAmountLabel: { fontFamily: "DMSans_400Regular", fontSize: 13, color: Colors.textSecondary },
+  payAmountValue: { fontFamily: "DMSans_700Bold", fontSize: 32, color: Colors.teal, marginTop: 4 },
+  payMethodsLabel: { fontFamily: "DMSans_700Bold", fontSize: 14, color: Colors.textSecondary, marginBottom: 12 },
+  payMethodCard: { flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: Colors.card, borderRadius: 14, padding: 16, marginBottom: 10, borderWidth: 1, borderColor: Colors.border },
+  payMethodCardActive: { borderColor: Colors.teal, backgroundColor: Colors.teal + "11" },
+  payMethodIcon: { width: 44, height: 44, borderRadius: 12, alignItems: "center", justifyContent: "center" },
+  payMethodLabel: { fontFamily: "DMSans_700Bold", fontSize: 15, color: Colors.text },
+  payMethodSub: { fontFamily: "DMSans_400Regular", fontSize: 11, color: Colors.textMuted, marginTop: 1 },
+  payRadio: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: Colors.textMuted, alignItems: "center", justifyContent: "center" },
+  payRadioActive: { borderColor: Colors.teal },
+  payRadioDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: Colors.teal },
+  payNowBtn: { backgroundColor: Colors.teal, borderRadius: 16, paddingVertical: 16, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 16 },
+  payNowText: { fontFamily: "DMSans_700Bold", fontSize: 16, color: "#fff" },
+  paySecure: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 12 },
+  paySecureText: { fontFamily: "DMSans_400Regular", fontSize: 11, color: Colors.textMuted },
+  payProcessing: { alignItems: "center", justifyContent: "center", paddingVertical: 60, gap: 16 },
+  payProcessingTitle: { fontFamily: "DMSans_700Bold", fontSize: 20, color: Colors.text },
+  payProcessingSub: { fontFamily: "DMSans_400Regular", fontSize: 14, color: Colors.textSecondary, textAlign: "center" },
+  paySuccessIcon: { marginBottom: 8 },
 });
