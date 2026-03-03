@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
   View,
   Text,
@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   TextInput,
   Platform,
+  ActivityIndicator,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather } from "@expo/vector-icons";
@@ -19,6 +20,7 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 import * as Haptics from "expo-haptics";
+import * as Location from "expo-location";
 import { Colors } from "@/constants/colors";
 import { PHARMACIES, MEDICINES } from "@/data/medicines";
 import { useCart } from "@/context/CartContext";
@@ -131,9 +133,45 @@ function MiniMedicineCard({ medicine }: { medicine: Medicine }) {
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const [searchText, setSearchText] = useState("");
+  const [locationText, setLocationText] = useState("Fetching location...");
+  const [locationLoading, setLocationLoading] = useState(true);
   const featuredMedicines = MEDICINES.slice(0, 6);
 
   const topPad = Platform.OS === "web" ? 67 : insets.top;
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== "granted") {
+          setLocationText("Location permission denied");
+          setLocationLoading(false);
+          return;
+        }
+        const loc = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        });
+        const geocode = await Location.reverseGeocodeAsync({
+          latitude: loc.coords.latitude,
+          longitude: loc.coords.longitude,
+        });
+        if (geocode.length > 0) {
+          const addr = geocode[0];
+          const parts = [
+            addr.subregion || addr.district,
+            addr.city || addr.region,
+          ].filter(Boolean);
+          setLocationText(parts.join(", ") || "Location found");
+        } else {
+          setLocationText("Location found");
+        }
+      } catch {
+        setLocationText("Sector 18, Noida");
+      } finally {
+        setLocationLoading(false);
+      }
+    })();
+  }, []);
 
   return (
     <View style={[styles.container, { paddingTop: topPad }]}>
@@ -147,7 +185,10 @@ export default function HomeScreen() {
             <Text style={styles.greeting}>Good morning,</Text>
             <View style={styles.locationRow}>
               <Ionicons name="location" size={14} color={Colors.teal} />
-              <Text style={styles.locationText}>Sector 18, Noida</Text>
+              {locationLoading ? (
+                <ActivityIndicator size="small" color={Colors.teal} style={{ marginHorizontal: 4 }} />
+              ) : null}
+              <Text style={styles.locationText}>{locationText}</Text>
               <Ionicons name="chevron-down" size={14} color={Colors.teal} />
             </View>
           </View>

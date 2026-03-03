@@ -275,6 +275,53 @@ export async function registerRoutes(app: Express): Promise<Server> {
     return res.json({ message: "Midnight flush executed" });
   });
 
+  // ── Payment (Razorpay) ────────────────────────────────────
+  app.post("/api/payment/create-order", (req: Request, res: Response) => {
+    const { amount, currency, orderId, customerName, customerEmail, customerPhone } = req.body;
+    if (!amount) return res.status(400).json({ message: "Amount is required" });
+
+    // In production, this would call Razorpay API:
+    // const razorpay = new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET });
+    // const order = await razorpay.orders.create({ amount: amount * 100, currency: currency || 'INR', receipt: orderId });
+
+    const paymentOrder = {
+      id: "pay_" + Date.now().toString(36) + Math.random().toString(36).substr(2, 6),
+      razorpayOrderId: "order_" + Date.now().toString(36) + Math.random().toString(36).substr(2, 8),
+      amount: amount,
+      currency: currency || "INR",
+      status: "created",
+      appOrderId: orderId,
+      customerName: customerName || "Customer",
+      customerEmail: customerEmail || "",
+      customerPhone: customerPhone || "",
+      createdAt: new Date().toISOString(),
+    };
+
+    return res.json({
+      ...paymentOrder,
+      razorpayKeyId: process.env.RAZORPAY_KEY_ID || "rzp_test_demo_key",
+    });
+  });
+
+  app.post("/api/payment/verify", (req: Request, res: Response) => {
+    const { razorpayOrderId, razorpayPaymentId, razorpaySignature, paymentMethod } = req.body;
+    if (!razorpayOrderId) return res.status(400).json({ message: "Order ID is required" });
+
+    // In production, verify signature using:
+    // const crypto = require('crypto');
+    // const expectedSignature = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+    //   .update(razorpayOrderId + '|' + razorpayPaymentId).digest('hex');
+    // const isValid = expectedSignature === razorpaySignature;
+
+    return res.json({
+      verified: true,
+      paymentId: razorpayPaymentId || "pay_" + Date.now().toString(36),
+      orderId: razorpayOrderId,
+      method: paymentMethod || "upi",
+      status: "captured",
+    });
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }
