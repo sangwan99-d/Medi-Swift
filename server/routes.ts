@@ -1,6 +1,26 @@
 import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "node:http";
+import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import Razorpay from "razorpay";
 import { storage } from "./storage";
+
+// Initialize Razorpay instance (uses env vars; falls back to test keys for development)
+const razorpayKeyId = process.env.RAZORPAY_KEY_ID || "";
+const razorpayKeySecret = process.env.RAZORPAY_KEY_SECRET || "";
+const razorpayEnabled = !!(razorpayKeyId && razorpayKeySecret);
+
+let razorpayInstance: Razorpay | null = null;
+if (razorpayEnabled) {
+  razorpayInstance = new Razorpay({
+    key_id: razorpayKeyId,
+    key_secret: razorpayKeySecret,
+  });
+  console.log("[Payment] Razorpay initialized with provided credentials");
+} else {
+  console.warn("[Payment] RAZORPAY_KEY_ID and/or RAZORPAY_KEY_SECRET not set. Payment gateway running in demo mode.");
+}
 
 export async function registerRoutes(app: Express): Promise<Server> {
 
@@ -276,50 +296,155 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ── Payment (Razorpay) ────────────────────────────────────
-  app.post("/api/payment/create-order", (req: Request, res: Response) => {
-    const { amount, currency, orderId, customerName, customerEmail, customerPhone } = req.body;
+  app.post("/api/payment/create-order", async (req: Request, res: Response) => {
+    const { amount, currency, customerName, customerEmail, customerPhone } = req.body;
     if (!amount) return res.status(400).json({ message: "Amount is required" });
 
-    // In production, this would call Razorpay API:
-    // const razorpay = new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET });
-    // const order = await razorpay.orders.create({ amount: amount * 100, currency: currency || 'INR', receipt: orderId });
+    const amountInPaise = Math.round(Number(amount) * 100);
+    const orderCurrency = currency || "INR";
 
-    const paymentOrder = {
-      id: "pay_" + Date.now().toString(36) + Math.random().toString(36).substr(2, 6),
-      razorpayOrderId: "order_" + Date.now().toString(36) + Math.random().toString(36).substr(2, 8),
-      amount: amount,
-      currency: currency || "INR",
+    if (razorpayEnabled && razorpayInstance) {
+      try {
+        const razorpayOrder = await razorpayInstance.orders.create({
+          amount: amountInPaise,
+          currency: orderCurrency,
+          receipt: "rcpt_" + Date.now().toString(36),
+          notes: {
+            customerName: customerName || "Customer",
+            customerEmail: customerEmail || "",
+            customerPhone: customerPhone || "",
+          },
+        });
+
+        return res.json({
+          id: razorpayOrder.id,
+          razorpayOrderId: razorpayOrder.id,
+          amount: Number(amount),
+          amountInPaise: razorpayOrder.amount,
+          currency: razorpayOrder.currency,
+          status: razorpayOrder.status,
+          razorpayKeyId: razorpayKeyId,
+          customerName: customerName || "Customer",
+          customerEmail: customerEmail || "",
+          customerPhone: customerPhone || "",
+          createdAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.error("[Payment] Razorpay order creation failed:", err);
+        return res.status(500).json({ message: "Failed to create payment order" });
+      }
+    }
+
+    // Demo mode fallback when Razorpay credentials are not configured
+    const demoOrderId = "order_demo_" + Date.now().toString(36) + Math.random().toString(36).substr(2, 8);
+    return res.json({
+      id: demoOrderId,
+      razorpayOrderId: demoOrderId,
+      amount: Number(amount),
+      amountInPaise: amountInPaise,
+      currency: orderCurrency,
       status: "created",
-      appOrderId: orderId,
+      razorpayKeyId: "rzp_test_demo_key",
       customerName: customerName || "Customer",
       customerEmail: customerEmail || "",
       customerPhone: customerPhone || "",
       createdAt: new Date().toISOString(),
-    };
-
-    return res.json({
-      ...paymentOrder,
-      razorpayKeyId: process.env.RAZORPAY_KEY_ID || "rzp_test_demo_key",
+      demo: true,
     });
   });
 
   app.post("/api/payment/verify", (req: Request, res: Response) => {
     const { razorpayOrderId, razorpayPaymentId, razorpaySignature, paymentMethod } = req.body;
-    if (!razorpayOrderId) return res.status(400).json({ message: "Order ID is required" });
+    if (!razorpayOrderId || !razorpayPaymentId) {
+      return res.status(400).json({ message: "Order ID and Payment ID are required" });
+    }
 
-    // In production, verify signature using:
-    // const crypto = require('crypto');
-    // const expectedSignature = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-    //   .update(razorpayOrderId + '|' + razorpayPaymentId).digest('hex');
-    // const isValid = expectedSignature === razorpaySignature;
+    if (razorpayEnabled) {
+      if (!razorpaySignature) {
+        return res.status(400).json({ message: "Signature is required for verification" });
+      }
+      // Verify the payment signature using HMAC SHA256
+      const expectedSignature = createHmac("sha256", razorpayKeySecret)
+        .update(razorpayOrderId + "|" + razorpayPaymentId)
+        .digest("hex");
 
+      const isValid = expectedSignature === razorpaySignature;
+      if (!isValid) {
+        return res.json({
+          verified: false,
+          message: "Payment signature verification failed",
+        });
+      }
+
+      return res.json({
+        verified: true,
+        paymentId: razorpayPaymentId,
+        orderId: razorpayOrderId,
+        method: paymentMethod || "upi",
+        status: "captured",
+      });
+    }
+
+    // Demo mode: always verify successfully
     return res.json({
       verified: true,
-      paymentId: razorpayPaymentId || "pay_" + Date.now().toString(36),
+      paymentId: razorpayPaymentId || "pay_demo_" + Date.now().toString(36),
       orderId: razorpayOrderId,
       method: paymentMethod || "upi",
       status: "captured",
+      demo: true,
     });
+  });
+
+  // Serve Razorpay checkout page (used by mobile app via WebBrowser)
+  app.get("/api/payment/checkout", (req: Request, res: Response) => {
+    const { orderId, amount, currency, customerName, customerEmail, customerPhone } = req.query;
+    if (!orderId || !amount) {
+      return res.status(400).send("Missing required parameters: orderId, amount");
+    }
+
+    const templatePath = resolve(process.cwd(), "server", "templates", "razorpay-checkout.html");
+    let html = readFileSync(templatePath, "utf-8");
+
+    const amountNum = Number(amount);
+    const amountInPaise = Math.round(amountNum * 100);
+    const displayAmount = "\u20B9" + amountNum.toLocaleString("en-IN");
+
+    // Build the callback URL
+    const forwardedProto = req.header("x-forwarded-proto") || req.protocol || "https";
+    const forwardedHost = req.header("x-forwarded-host") || req.get("host");
+    const baseUrl = `${forwardedProto}://${forwardedHost}`;
+    const callbackUrl = `${baseUrl}/api/payment/callback`;
+
+    html = html
+      .replace(/RAZORPAY_KEY_PLACEHOLDER/g, razorpayKeyId || "rzp_test_demo_key")
+      .replace(/ORDER_ID_PLACEHOLDER/g, String(orderId))
+      .replace(/AMOUNT_RAW_PLACEHOLDER/g, String(amountInPaise))
+      .replace(/AMOUNT_PLACEHOLDER/g, displayAmount)
+      .replace(/CURRENCY_PLACEHOLDER/g, String(currency || "INR"))
+      .replace(/CUSTOMER_NAME_PLACEHOLDER/g, String(customerName || "Customer"))
+      .replace(/CUSTOMER_EMAIL_PLACEHOLDER/g, String(customerEmail || ""))
+      .replace(/CUSTOMER_PHONE_PLACEHOLDER/g, String(customerPhone || ""))
+      .replace(/CALLBACK_URL_PLACEHOLDER/g, callbackUrl)
+      .replace(/APP_SCHEME_PLACEHOLDER/g, "medswift");
+
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.status(200).send(html);
+  });
+
+  // Handle payment callback and redirect back to app
+  app.get("/api/payment/callback", (req: Request, res: Response) => {
+    const { status, razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.query;
+
+    if (status === "success" && razorpay_order_id && razorpay_payment_id && razorpay_signature) {
+      // Redirect back to app with payment details via deep link
+      const deepLink = `medswift://payment-callback?status=success&razorpay_order_id=${razorpay_order_id}&razorpay_payment_id=${razorpay_payment_id}&razorpay_signature=${razorpay_signature}`;
+      return res.redirect(deepLink);
+    }
+
+    // Payment failed or cancelled
+    const deepLink = `medswift://payment-callback?status=${status || "failed"}`;
+    return res.redirect(deepLink);
   });
 
   const httpServer = createServer(app);
