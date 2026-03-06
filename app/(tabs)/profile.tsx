@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   View,
   Text,
@@ -8,12 +8,12 @@ import {
   Platform,
   Modal,
   TextInput,
-  Alert,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Haptics from "expo-haptics";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Colors } from "@/constants/colors";
 import { router } from "expo-router";
 import { useCart } from "@/context/CartContext";
@@ -24,7 +24,7 @@ const APP_SWITCHER = [
   { id: "admin", label: "Admin Dashboard", sub: "Platform Control", icon: "settings", color: "#FFB547" },
 ];
 
-const SAVED_ADDRESSES = [
+const DEFAULT_ADDRESSES = [
   { id: "1", label: "Home", address: "42, MG Road, Sector 18, Noida, UP 201301", icon: "home-outline" },
   { id: "2", label: "Office", address: "Tower B, Cyber City, Gurugram, HR 122002", icon: "business-outline" },
 ];
@@ -34,27 +34,75 @@ const SAVED_PRESCRIPTIONS = [
   { id: "2", date: "28 Jan 2026", doctor: "Dr. Gupta", condition: "Vitamin Deficiency" },
 ];
 
+const ICON_OPTIONS: string[] = ["home-outline", "business-outline", "location-outline", "heart-outline", "star-outline"];
+
+interface SavedAddress {
+  id: string;
+  label: string;
+  address: string;
+  icon: string;
+}
+
 export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const { clearCart } = useCart();
   const topPad = Platform.OS === "web" ? 67 : insets.top;
   const bottomPad = Platform.OS === "web" ? 34 : insets.bottom;
 
-  // Profile state
+  // Profile state - persisted in AsyncStorage
   const [userName, setUserName] = useState("Rahul Sharma");
   const [userEmail, setUserEmail] = useState("rahul.sharma@email.com");
   const [userPhone, setUserPhone] = useState("+91 98765 43210");
+
+  // Addresses state - persisted in AsyncStorage
+  const [addresses, setAddresses] = useState<SavedAddress[]>(DEFAULT_ADDRESSES);
 
   // Modal states
   const [editProfileVisible, setEditProfileVisible] = useState(false);
   const [addressesVisible, setAddressesVisible] = useState(false);
   const [prescriptionsVisible, setPrescriptionsVisible] = useState(false);
   const [paymentVisible, setPaymentVisible] = useState(false);
+  const [signOutVisible, setSignOutVisible] = useState(false);
 
-  // Edit form state
+  // Edit profile form state
   const [editName, setEditName] = useState(userName);
   const [editEmail, setEditEmail] = useState(userEmail);
   const [editPhone, setEditPhone] = useState(userPhone);
+
+  // Address form state
+  const [addressFormVisible, setAddressFormVisible] = useState(false);
+  const [editingAddressId, setEditingAddressId] = useState<string | null>(null);
+  const [addressLabel, setAddressLabel] = useState("");
+  const [addressText, setAddressText] = useState("");
+  const [addressIcon, setAddressIcon] = useState("home-outline");
+
+  // Load saved profile & addresses from AsyncStorage on mount
+  useEffect(() => {
+    AsyncStorage.getItem("profile").then((val) => {
+      if (val) {
+        const profile = JSON.parse(val);
+        setUserName(profile.name || "Rahul Sharma");
+        setUserEmail(profile.email || "rahul.sharma@email.com");
+        setUserPhone(profile.phone || "+91 98765 43210");
+      }
+    });
+    AsyncStorage.getItem("addresses").then((val) => {
+      if (val) {
+        const saved = JSON.parse(val);
+        if (Array.isArray(saved) && saved.length > 0) {
+          setAddresses(saved);
+        }
+      }
+    });
+  }, []);
+
+  const saveProfile = useCallback((name: string, email: string, phone: string) => {
+    AsyncStorage.setItem("profile", JSON.stringify({ name, email, phone }));
+  }, []);
+
+  const saveAddresses = useCallback((addrs: SavedAddress[]) => {
+    AsyncStorage.setItem("addresses", JSON.stringify(addrs));
+  }, []);
 
   const handleEditProfile = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -65,31 +113,88 @@ export default function ProfileScreen() {
   };
 
   const handleSaveProfile = () => {
+    const trimmedName = editName.trim();
+    const trimmedEmail = editEmail.trim();
+    const trimmedPhone = editPhone.trim();
+    if (!trimmedName || !trimmedEmail || !trimmedPhone) return;
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    setUserName(editName);
-    setUserEmail(editEmail);
-    setUserPhone(editPhone);
+    setUserName(trimmedName);
+    setUserEmail(trimmedEmail);
+    setUserPhone(trimmedPhone);
+    saveProfile(trimmedName, trimmedEmail, trimmedPhone);
     setEditProfileVisible(false);
   };
 
+  // --- Address handlers ---
+  const handleAddNewAddress = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setEditingAddressId(null);
+    setAddressLabel("");
+    setAddressText("");
+    setAddressIcon("home-outline");
+    setAddressFormVisible(true);
+  };
+
+  const handleEditAddress = (addr: SavedAddress) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setEditingAddressId(addr.id);
+    setAddressLabel(addr.label);
+    setAddressText(addr.address);
+    setAddressIcon(addr.icon);
+    setAddressFormVisible(true);
+  };
+
+  const handleSaveAddress = () => {
+    const trimmedLabel = addressLabel.trim();
+    const trimmedAddress = addressText.trim();
+    if (!trimmedLabel || !trimmedAddress) return;
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    let updated: SavedAddress[];
+    if (editingAddressId) {
+      updated = addresses.map((a) =>
+        a.id === editingAddressId
+          ? { ...a, label: trimmedLabel, address: trimmedAddress, icon: addressIcon }
+          : a
+      );
+    } else {
+      const newAddr: SavedAddress = {
+        id: Date.now().toString(),
+        label: trimmedLabel,
+        address: trimmedAddress,
+        icon: addressIcon,
+      };
+      updated = [...addresses, newAddr];
+    }
+    setAddresses(updated);
+    saveAddresses(updated);
+    setAddressFormVisible(false);
+  };
+
+  const handleDeleteAddress = (id: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    const updated = addresses.filter((a) => a.id !== id);
+    setAddresses(updated);
+    saveAddresses(updated);
+  };
+
+  // --- Sign out handler using custom modal instead of Alert.alert ---
   const handleSignOut = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    Alert.alert(
-      "Sign Out",
-      "Are you sure you want to sign out? Your cart will be cleared.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Sign Out",
-          style: "destructive",
-          onPress: () => {
-            clearCart();
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-            router.replace("/(tabs)");
-          },
-        },
-      ]
-    );
+    setSignOutVisible(true);
+  };
+
+  const confirmSignOut = () => {
+    clearCart();
+    // Reset profile to defaults
+    setUserName("Rahul Sharma");
+    setUserEmail("rahul.sharma@email.com");
+    setUserPhone("+91 98765 43210");
+    setAddresses(DEFAULT_ADDRESSES);
+    // Clear persisted data
+    AsyncStorage.multiRemove(["profile", "addresses", "cart", "orders"]);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setSignOutVisible(false);
+    router.replace("/(tabs)");
   };
 
   const SETTINGS_ITEMS = [
@@ -187,41 +292,43 @@ export default function ProfileScreen() {
                 <Ionicons name="close" size={24} color={Colors.text} />
               </TouchableOpacity>
             </View>
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Full Name</Text>
-              <TextInput
-                style={styles.input}
-                value={editName}
-                onChangeText={setEditName}
-                placeholderTextColor={Colors.textMuted}
-                placeholder="Enter your name"
-              />
-            </View>
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Email</Text>
-              <TextInput
-                style={styles.input}
-                value={editEmail}
-                onChangeText={setEditEmail}
-                keyboardType="email-address"
-                placeholderTextColor={Colors.textMuted}
-                placeholder="Enter your email"
-              />
-            </View>
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Phone</Text>
-              <TextInput
-                style={styles.input}
-                value={editPhone}
-                onChangeText={setEditPhone}
-                keyboardType="phone-pad"
-                placeholderTextColor={Colors.textMuted}
-                placeholder="Enter your phone"
-              />
-            </View>
-            <TouchableOpacity style={styles.saveBtn} onPress={handleSaveProfile}>
-              <Text style={styles.saveBtnText}>Save Changes</Text>
-            </TouchableOpacity>
+            <ScrollView showsVerticalScrollIndicator={false}>
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Full Name</Text>
+                <TextInput
+                  style={styles.input}
+                  value={editName}
+                  onChangeText={setEditName}
+                  placeholderTextColor={Colors.textMuted}
+                  placeholder="Enter your name"
+                />
+              </View>
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Email</Text>
+                <TextInput
+                  style={styles.input}
+                  value={editEmail}
+                  onChangeText={setEditEmail}
+                  keyboardType="email-address"
+                  placeholderTextColor={Colors.textMuted}
+                  placeholder="Enter your email"
+                />
+              </View>
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Phone</Text>
+                <TextInput
+                  style={styles.input}
+                  value={editPhone}
+                  onChangeText={setEditPhone}
+                  keyboardType="phone-pad"
+                  placeholderTextColor={Colors.textMuted}
+                  placeholder="Enter your phone"
+                />
+              </View>
+              <TouchableOpacity style={styles.saveBtn} onPress={handleSaveProfile}>
+                <Text style={styles.saveBtnText}>Save Changes</Text>
+              </TouchableOpacity>
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -236,24 +343,97 @@ export default function ProfileScreen() {
                 <Ionicons name="close" size={24} color={Colors.text} />
               </TouchableOpacity>
             </View>
-            {SAVED_ADDRESSES.map((addr) => (
-              <View key={addr.id} style={styles.addressCard}>
-                <View style={styles.addressIcon}>
-                  <Ionicons name={addr.icon as any} size={20} color={Colors.teal} />
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {addresses.map((addr) => (
+                <View key={addr.id} style={styles.addressCard}>
+                  <View style={styles.addressIconWrap}>
+                    <Ionicons name={addr.icon as any} size={20} color={Colors.teal} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.addressLabel}>{addr.label}</Text>
+                    <Text style={styles.addressText}>{addr.address}</Text>
+                  </View>
+                  <View style={styles.addressActions}>
+                    <TouchableOpacity onPress={() => handleEditAddress(addr)} style={styles.addressActionBtn}>
+                      <Ionicons name="create-outline" size={18} color={Colors.teal} />
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => handleDeleteAddress(addr.id)} style={styles.addressActionBtn}>
+                      <Ionicons name="trash-outline" size={18} color={Colors.danger} />
+                    </TouchableOpacity>
+                  </View>
                 </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.addressLabel}>{addr.label}</Text>
-                  <Text style={styles.addressText}>{addr.address}</Text>
+              ))}
+              {addresses.length === 0 && (
+                <View style={styles.emptyState}>
+                  <Ionicons name="location-outline" size={40} color={Colors.textMuted} />
+                  <Text style={styles.emptyStateText}>No saved addresses yet</Text>
                 </View>
-                <TouchableOpacity onPress={() => Haptics.selectionAsync()}>
-                  <Ionicons name="create-outline" size={18} color={Colors.textMuted} />
-                </TouchableOpacity>
+              )}
+              <TouchableOpacity style={styles.addNewBtn} onPress={handleAddNewAddress}>
+                <Ionicons name="add-circle-outline" size={20} color={Colors.teal} />
+                <Text style={styles.addNewText}>Add New Address</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Address Form Modal (Add / Edit) */}
+      <Modal visible={addressFormVisible} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>{editingAddressId ? "Edit Address" : "Add Address"}</Text>
+              <TouchableOpacity onPress={() => setAddressFormVisible(false)}>
+                <Ionicons name="close" size={24} color={Colors.text} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView showsVerticalScrollIndicator={false}>
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Label</Text>
+                <TextInput
+                  style={styles.input}
+                  value={addressLabel}
+                  onChangeText={setAddressLabel}
+                  placeholderTextColor={Colors.textMuted}
+                  placeholder="e.g. Home, Office, Gym"
+                />
               </View>
-            ))}
-            <TouchableOpacity style={styles.addNewBtn} onPress={() => Haptics.selectionAsync()}>
-              <Ionicons name="add-circle-outline" size={20} color={Colors.teal} />
-              <Text style={styles.addNewText}>Add New Address</Text>
-            </TouchableOpacity>
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Full Address</Text>
+                <TextInput
+                  style={[styles.input, { minHeight: 80, textAlignVertical: "top" }]}
+                  value={addressText}
+                  onChangeText={setAddressText}
+                  placeholderTextColor={Colors.textMuted}
+                  placeholder="Enter full address with pincode"
+                  multiline
+                />
+              </View>
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Icon</Text>
+                <View style={styles.iconPicker}>
+                  {ICON_OPTIONS.map((icon) => (
+                    <TouchableOpacity
+                      key={icon}
+                      style={[
+                        styles.iconOption,
+                        addressIcon === icon && styles.iconOptionActive,
+                      ]}
+                      onPress={() => {
+                        Haptics.selectionAsync();
+                        setAddressIcon(icon);
+                      }}
+                    >
+                      <Ionicons name={icon as any} size={22} color={addressIcon === icon ? Colors.teal : Colors.textMuted} />
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+              <TouchableOpacity style={styles.saveBtn} onPress={handleSaveAddress}>
+                <Text style={styles.saveBtnText}>{editingAddressId ? "Update Address" : "Save Address"}</Text>
+              </TouchableOpacity>
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -338,6 +518,37 @@ export default function ProfileScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Sign Out Confirmation Modal (cross-platform replacement for Alert.alert) */}
+      <Modal visible={signOutVisible} animationType="fade" transparent>
+        <View style={styles.signOutOverlay}>
+          <View style={styles.signOutCard}>
+            <View style={styles.signOutIconWrap}>
+              <Ionicons name="log-out-outline" size={32} color={Colors.danger} />
+            </View>
+            <Text style={styles.signOutTitle}>Sign Out</Text>
+            <Text style={styles.signOutMessage}>
+              Are you sure you want to sign out? Your cart and saved data will be cleared.
+            </Text>
+            <View style={styles.signOutActions}>
+              <TouchableOpacity
+                style={styles.signOutCancelBtn}
+                onPress={() => setSignOutVisible(false)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.signOutCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.signOutConfirmBtn}
+                onPress={confirmSignOut}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.signOutConfirmText}>Sign Out</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -387,9 +598,20 @@ const styles = StyleSheet.create({
 
   // Address card
   addressCard: { flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: Colors.card, borderRadius: 14, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: Colors.border },
-  addressIcon: { width: 44, height: 44, borderRadius: 12, backgroundColor: Colors.teal + "22", alignItems: "center", justifyContent: "center" },
+  addressIconWrap: { width: 44, height: 44, borderRadius: 12, backgroundColor: Colors.teal + "22", alignItems: "center", justifyContent: "center" },
   addressLabel: { fontFamily: "DMSans_700Bold", fontSize: 15, color: Colors.text },
   addressText: { fontFamily: "DMSans_400Regular", fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
+  addressActions: { flexDirection: "column", gap: 8 },
+  addressActionBtn: { padding: 4 },
+
+  // Empty state
+  emptyState: { alignItems: "center", justifyContent: "center", paddingVertical: 24, gap: 8 },
+  emptyStateText: { fontFamily: "DMSans_400Regular", fontSize: 14, color: Colors.textMuted },
+
+  // Icon picker
+  iconPicker: { flexDirection: "row", gap: 10, flexWrap: "wrap" },
+  iconOption: { width: 48, height: 48, borderRadius: 12, backgroundColor: Colors.card, borderWidth: 1, borderColor: Colors.border, alignItems: "center", justifyContent: "center" },
+  iconOptionActive: { borderColor: Colors.teal, backgroundColor: Colors.teal + "22" },
 
   // Prescription card
   prescriptionCard: { flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: Colors.card, borderRadius: 14, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: Colors.border },
@@ -409,4 +631,16 @@ const styles = StyleSheet.create({
   // Add new button
   addNewBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 14, borderRadius: 14, borderWidth: 1, borderColor: Colors.teal + "44", borderStyle: "dashed", marginTop: 4 },
   addNewText: { fontFamily: "DMSans_700Bold", fontSize: 14, color: Colors.teal },
+
+  // Sign out confirmation modal
+  signOutOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.7)", justifyContent: "center", alignItems: "center", paddingHorizontal: 32 },
+  signOutCard: { backgroundColor: Colors.card, borderRadius: 20, padding: 28, alignItems: "center", borderWidth: 1, borderColor: Colors.border, width: "100%", maxWidth: 340 },
+  signOutIconWrap: { width: 64, height: 64, borderRadius: 32, backgroundColor: Colors.danger + "22", alignItems: "center", justifyContent: "center", marginBottom: 16 },
+  signOutTitle: { fontFamily: "DMSans_700Bold", fontSize: 20, color: Colors.text, marginBottom: 8 },
+  signOutMessage: { fontFamily: "DMSans_400Regular", fontSize: 14, color: Colors.textSecondary, textAlign: "center", lineHeight: 20, marginBottom: 24 },
+  signOutActions: { flexDirection: "row", gap: 12, width: "100%" },
+  signOutCancelBtn: { flex: 1, backgroundColor: Colors.cardElevated, borderRadius: 14, paddingVertical: 14, alignItems: "center", borderWidth: 1, borderColor: Colors.border },
+  signOutCancelText: { fontFamily: "DMSans_700Bold", fontSize: 15, color: Colors.text },
+  signOutConfirmBtn: { flex: 1, backgroundColor: Colors.danger, borderRadius: 14, paddingVertical: 14, alignItems: "center" },
+  signOutConfirmText: { fontFamily: "DMSans_700Bold", fontSize: 15, color: "#fff" },
 });
